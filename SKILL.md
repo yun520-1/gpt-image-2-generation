@@ -1,7 +1,7 @@
 ---
 name: gpt-image-2-generation
-version: "1.0.0"
-description: 独立的 gpt-image-2 生图技能，先验证接口可用性，再生成图片并保存为本地文件；所有密钥通过环境变量注入，不包含跳过证书验证的示例。
+version: "1.1.0"
+description: 通用的对话生图技能。先发现已配置的 OpenAI 兼容 API，再验证是否支持 gpt-image-2，随后生成图片并保存为本地文件。适合所有 AI 使用，不绑定 HeartFlow。
 author: HeartFlow
 ---
 
@@ -10,42 +10,80 @@ author: HeartFlow
 ## 适用场景
 
 当你需要：
-- 通过 `https://api.clawto.link/v1/images/generations` 调用 `gpt-image-2`
-- 先验证 API 是否可用，再执行生图
-- 把返回的 `b64_json` 解码成图片文件
-- 形成一个**独立**的生图技能，与 HeartFlow 主体无关
+- 在对话中直接生成图片
+- 先发现已配置好的 OpenAI 兼容 API
+- 检查 API 是否支持 `gpt-image-2`
+- 生成图片并保存为本地文件
+- 作为任何 AI Agent 的通用生图模块
 
 ## 安全原则
 
-- **不在技能文档中保存真实密钥**
-- **不提供禁用 SSL 证书验证的示例**
-- **优先使用环境变量注入 API Key**
-- **如果接口不可用，先检查网络、证书和额度，再重试**
+- 不在技能文档中保存真实密钥
+- 不提供跳过 SSL 证书验证的示例
+- 优先使用环境变量注入 API Key
+- 如果接口不可用，先检查网络、证书、额度与配置，再重试
 
-## 1. 验证接口
+## 1. 发现已配置 API
 
-先确认模型列表可用：
+优先从环境变量读取：
+- `OPENAI_BASE_URL`
+- `OPENAI_API_KEY`
+- `CLAWTO_BASE_URL`
+- `CLAWTO_API_KEY`
+
+如果没有环境变量，也可以由宿主 Agent 自己从配置文件注入。
+
+示例：
 
 ```bash
 python3 - <<'PY'
-import os, urllib.request, ssl
-url = 'https://api.clawto.link/v1/models'
-key = os.environ['CLAWTO_API_KEY']
-req = urllib.request.Request(url, headers={'Authorization': f'Bearer {key}'})
-ctx = ssl.create_default_context()
-with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
-    print(r.status)
-    print(r.read().decode('utf-8', 'ignore'))
+import os
+candidates = [
+    ('OPENAI_BASE_URL', 'OPENAI_API_KEY'),
+    ('CLAWTO_BASE_URL', 'CLAWTO_API_KEY'),
+]
+for base_var, key_var in candidates:
+    base = os.getenv(base_var)
+    key = os.getenv(key_var)
+    if base and key:
+        print(f'{base_var}={base}')
+        print(f'{key_var}=SET')
+        break
+else:
+    print('no_api_found')
 PY
 ```
 
-## 2. 调用 gpt-image-2
+## 2. 验证是否支持 gpt-image-2
+
+对发现的 API 调用 `/v1/models`：
 
 ```bash
 python3 - <<'PY'
-import os, urllib.request, json, ssl
-api = 'https://api.clawto.link/v1/images/generations'
-key = os.environ['CLAWTO_API_KEY']
+import os, json, urllib.request, ssl
+base = os.environ['API_BASE_URL'].rstrip('/')
+key = os.environ['API_KEY']
+url = f'{base}/models'
+req = urllib.request.Request(url, headers={'Authorization': f'Bearer {key}'})
+ctx = ssl.create_default_context()
+with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+    data = json.loads(r.read().decode('utf-8', 'ignore'))
+    models = [m.get('id') for m in data.get('data', [])]
+    print('has_gpt_image_2=', 'gpt-image-2' in models)
+    print(models)
+PY
+```
+
+如果列表里包含 `gpt-image-2`，再继续下一步。
+
+## 3. 调用 gpt-image-2
+
+```bash
+python3 - <<'PY'
+import os, json, urllib.request, ssl
+base = os.environ['API_BASE_URL'].rstrip('/')
+key = os.environ['API_KEY']
+api = f'{base}/images/generations'
 payload = json.dumps({
     'model': 'gpt-image-2',
     'prompt': 'a stylish female livestream host in a professional streaming studio, smiling, modern lighting, realistic, safe and tasteful, no suggestive pose',
@@ -62,7 +100,7 @@ with urllib.request.urlopen(req, context=ctx, timeout=180) as r:
 PY
 ```
 
-## 3. 保存图片
+## 4. 保存图片
 
 如果返回里包含 `data[0].b64_json`，解码保存：
 
@@ -90,7 +128,7 @@ PY
 ### 余额不足
 如果出现 `insufficient balance`，说明不是接口问题，而是账户额度问题。
 
-## 可复用提示词模板
+## 示例提示词
 
 ```text
 a stylish female livestream host in a professional streaming studio, smiling, modern lighting, realistic, safe and tasteful, no suggestive pose
@@ -101,14 +139,17 @@ a stylish female livestream host in a professional streaming studio, smiling, mo
 - 产品展示
 - 访谈主持
 - 商业宣传图
+- 宇宙女神主题
 
 ## 验证标准
 
+- 能发现一个已配置 API
 - `/v1/models` 返回 200
+- `gpt-image-2` 存在于模型列表中
 - `/v1/images/generations` 返回 200
 - 响应里存在 `data[0].b64_json`
 - 图片成功写入本地文件
 
 ## 备注
 
-不要在技能中保存真实密钥。所有 key 必须由环境变量或外部配置注入。
+不要在技能中保存真实密钥。所有 key 必须由环境变量或宿主配置注入。
